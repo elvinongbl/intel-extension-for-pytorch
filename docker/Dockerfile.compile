@@ -9,7 +9,10 @@ ARG BASE_IMAGE=ubuntu:22.04
 FROM ${BASE_IMAGE} AS base
 RUN if [ -f /etc/apt/apt.conf.d/proxy.conf ]; then rm /etc/apt/apt.conf.d/proxy.conf; fi && \
     if [ ! -z ${HTTP_PROXY} ]; then echo "Acquire::http::Proxy \"${HTTP_PROXY}\";" >> /etc/apt/apt.conf.d/proxy.conf; fi && \
-    if [ ! -z ${HTTPS_PROXY} ]; then echo "Acquire::https::Proxy \"${HTTPS_PROXY}\";" >> /etc/apt/apt.conf.d/proxy.conf; fi
+    if [ ! -z ${HTTPS_PROXY} ]; then echo "Acquire::https::Proxy \"${HTTPS_PROXY}\";" >> /etc/apt/apt.conf.d/proxy.conf; fi && \
+    if [ ! -z ${HTTP_PROXY} ]; then echo "http_proxy=\"${HTTP_PROXY}\";" >> /etc/environment; fi && \
+    if [ ! -z ${HTTPS_PROXY} ]; then echo "https_proxy=\"${HTTPS_PROXY}\";" >> /etc/environment; fi
+
 RUN apt update && \
     apt full-upgrade -y && \
     DEBIAN_FRONTEND=noninteractive apt install --no-install-recommends -y \
@@ -24,42 +27,42 @@ RUN apt update && \
     pkg-config \
     software-properties-common \
     gnupg \
-    gpg-agent
+    gpg-agent \
+    python3.10-venv \
+    bzip2 \
+    libpng-dev \
+    libjpeg-turbo8-dev
+
 COPY ./scripts/tools/compilation_helper/basekit_driver_install_helper.sh .
 RUN bash ./basekit_driver_install_helper.sh driver
 
 WORKDIR /root
-
-RUN curl -fsSL -v -o miniforge.sh -O https://github.com/conda-forge/miniforge/releases/download/24.1.2-0/Miniforge3-24.1.2-0-Linux-x86_64.sh && \
-    bash miniforge.sh -b -p ./miniforge3 && \
-    rm miniforge.sh && \
-    echo "source ~/miniforge3/bin/activate" >> ./.bashrc
 
 FROM base AS dev
 RUN bash /basekit_driver_install_helper.sh dev
 COPY . ./intel-extension-for-pytorch/
 RUN cp ./intel-extension-for-pytorch/scripts/compile_bundle.sh ./ && \
     sed -i "s/VER_IPEX=.*/VER_IPEX=/" compile_bundle.sh
-RUN . ./miniforge3/bin/activate && \
-    conda create -y -n compile_py310 python=3.10 && conda activate compile_py310 && \
-    bash compile_bundle.sh /opt/intel/oneapi/compiler/latest /opt/intel/oneapi/mkl/latest /opt/intel/oneapi/ccl/latest /opt/intel/oneapi/mpi/latest pvc,ats-m150,acm-g11 && \
+RUN python3 -m venv /opt/venv/compile_py310 && \
+    . /opt/venv/compile_py310/bin/activate && \
+    apt install -y python3.10-dev && \
+    bash compile_bundle.sh /opt/intel/oneapi/compiler/latest /opt/intel/oneapi/mkl/latest /opt/intel/oneapi/ccl/latest /opt/intel/oneapi/mpi/latest pvc,ats-m150,acm-g10 && \
     mkdir wheels && cp pytorch/dist/*.whl vision/dist/*.whl audio/dist/*.whl intel-extension-for-pytorch/dist/*.whl torch-ccl/dist/*.whl ./wheels
 
 FROM base AS deploy
-RUN apt clean && \
+RUN apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     if [ -f /etc/apt/apt.conf.d/proxy.conf ]; then rm /etc/apt/apt.conf.d/proxy.conf; fi && \
     rm /basekit_driver_install_helper.sh
 COPY --from=dev /root/wheels ./wheels
 COPY --from=dev /root/intel-extension-for-pytorch/scripts/tools/compilation_helper/get_libstdcpp_lib.sh .
-RUN . ./miniforge3/bin/activate && \
-    conda create -y -n py310 python=3.10 && conda activate py310 && \
-    conda install -y libstdcxx-ng libpng libjpeg-turbo && \
+RUN python3 -m venv /opt/venv/py310 && \
+    . /opt/venv/py310/bin/activate && \
     python -m pip install ./wheels/*.whl && \
+    python -m pip install transformers && \
     python -m pip cache purge && \
-    conda clean -a -y && \
     rm -rf ./wheels && \
-    echo "conda activate py310" >> ./.bashrc && \
+    echo "source /opt/venv/py310/bin/activate" >> ./.bashrc  && \
     echo "export OCL_ICD_VENDORS=/etc/OpenCL/vendors" >> ./.bashrc && \
     echo "export CCL_ROOT=${CONDA_PREFIX}" >> ./.bashrc && \
     ldpreload=$(bash get_libstdcpp_lib.sh) && echo "export LD_PRELOAD=${ldpreload}" >> ./.bashrc && rm get_libstdcpp_lib.sh

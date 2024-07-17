@@ -227,7 +227,6 @@ python -m pip uninstall -y torch torchvision torchaudio intel-extension-for-pyto
 python -m pip install cmake make ninja
 if [ $((${MODE} & 0x04)) -ne 0 ]; then
     python -m pip install Pillow
-    conda install -y conda-forge::libpng conda-forge::libjpeg-turbo
 fi
 
 ABI=1
